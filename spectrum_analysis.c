@@ -3,79 +3,123 @@
 #include <stdlib.h>
 #include <math.h>
 
-#define IMAGE_WIDTH 500
-#define IMAGE_HEIGHT 10
 #define MAX_COLOR_INTENSITY 255
 
 typedef struct {
-    uint8_t red;
-    uint8_t green;
-    uint8_t blue;
+    uint8_t intensity;
 } Pixel;
 
 int main() {
-    FILE* imageFile = fopen("spectrum.bmp", "rb");  // If the image is in other location Replace "spectrum.bmp" with the actual image file path
+    FILE* imageFile = fopen("spectrum.bmp", "rb");  // Replace "spectrum.bmp" with the actual image file path
     if (imageFile == NULL) {
         printf("Failed to open the image file.\n");
         return 1;
     }
 
-    // Skip the BMP file header (14 bytes)
-    fseek(imageFile, 14, SEEK_SET);
+    // Read the BMP file header to get the image dimensions
+    uint32_t imageDataOffset;
+    uint32_t imageWidth;
+    uint32_t imageHeight;
+    fseek(imageFile, 10, SEEK_SET);
+    fread(&imageDataOffset, sizeof(uint32_t), 1, imageFile);
+    fseek(imageFile, 18, SEEK_SET);
+    fread(&imageWidth, sizeof(uint32_t), 1, imageFile);
+    fread(&imageHeight, sizeof(uint32_t), 1, imageFile);
 
-    // Read the BMP image pixel data
-    Pixel image[IMAGE_HEIGHT][IMAGE_WIDTH];
-    for (int row = 0; row < IMAGE_HEIGHT; row++) {
-        fread(&image[row][0], sizeof(Pixel), IMAGE_WIDTH, imageFile);
+    // Ensure the image dimensions match the requirements
+    if (imageWidth != 25000 || imageHeight != 500) {
+        printf("Invalid image dimensions.\n");
+        fclose(imageFile);
+        return 1;
+    }
+
+    // Calculate the number of bytes per row (including padding)
+    uint32_t bytesPerRow = (imageWidth / 8 + 3) & ~3;
+
+    // Allocate memory for the image
+    Pixel** image = (Pixel**)malloc(imageHeight * sizeof(Pixel*));
+    if (image == NULL) {
+        printf("Memory allocation failed for image.\n");
+        fclose(imageFile);
+        return 1;
+    }
+
+    for (int row = 0; row < imageHeight; row++) {
+        image[row] = (Pixel*)malloc(imageWidth / 8 * sizeof(Pixel));
+        if (image[row] == NULL) {
+            printf("Memory allocation failed for image row %d.\n", row);
+            for (int i = 0; i < row; i++) {
+                free(image[i]);
+            }
+            free(image);
+            fclose(imageFile);
+            return 1;
+        }
+        fseek(imageFile, imageDataOffset + (imageHeight - 1 - row) * bytesPerRow, SEEK_SET);
+        fread(image[row], sizeof(Pixel), imageWidth / 8, imageFile);
     }
 
     fclose(imageFile);
 
-    // User input for minimum and maximum wavelengths
+    // Take user input for minimum and maximum wavelengths
     int minWavelength, maxWavelength;
     printf("Enter the minimum wavelength (in nm): ");
     if (scanf("%d", &minWavelength) != 1) {
         printf("Invalid input.\n");
+        for (int row = 0; row < imageHeight; row++) {
+            free(image[row]);
+        }
+        free(image);
         return 1;
     }
+
     printf("Enter the maximum wavelength (in nm): ");
     if (scanf("%d", &maxWavelength) != 1) {
         printf("Invalid input.\n");
+        for (int row = 0; row < imageHeight; row++) {
+            free(image[row]);
+        }
+        free(image);
         return 1;
     }
 
     // Calculate wavelength step size
-    double wavelengthStep = (double)(maxWavelength - minWavelength) / (IMAGE_WIDTH - 1);
+    double wavelengthStep = (double)(maxWavelength - minWavelength) / (imageWidth - 1);
 
     // Calculate intensity for each pixel column
-    int intensities[IMAGE_WIDTH];
-    for (int col = 0; col < IMAGE_WIDTH; col++) {
-        int maxIntensity = 0;
+    int* intensities = (int*)calloc(imageWidth, sizeof(int));
+    if (intensities == NULL) {
+        printf("Memory allocation failed for intensities.\n");
+        for (int row = 0; row < imageHeight; row++) {
+            free(image[row]);
+        }
+        free(image);
+        return 1;
+    }
 
-        // Find the maximum intensity in the column
-        for (int row = 0; row < IMAGE_HEIGHT; row++) {
-            // Get the RGB values of the pixel
-            uint8_t red = image[row][col].red;
-            uint8_t green = image[row][col].green;
-            uint8_t blue = image[row][col].blue;
+    for (int col = 0; col < imageWidth; col++) {
+        int intensity = 0;
 
-            // Check if the pixel is white (assuming intensity is proportional to the height of the white pixel)
-            if (red == MAX_COLOR_INTENSITY && green == MAX_COLOR_INTENSITY && blue == MAX_COLOR_INTENSITY) {
-                int height = IMAGE_HEIGHT - row - 1;  // Calculate the height from the bottom (reversed due to image coordinate system)
-                int intensity = (height * MAX_COLOR_INTENSITY) / (IMAGE_HEIGHT - 1);  // Calculate intensity as a fraction of the maximum height
-                if (intensity > maxIntensity) {
-                    maxIntensity = intensity;
-                }
+        for (int row = 0; row < imageHeight; row++) {
+            uint8_t byte = image[row][col / 8].intensity;
+            uint8_t bitMask = 1 << (7 - (col % 8));
+            if ((byte & bitMask) != 0) {
+                intensity++;
             }
         }
 
-        intensities[col] = maxIntensity;
+        intensities[col] = intensity;
     }
 
     // Plot the graph using Gnuplot
     FILE* gnuplotPipe = popen("gnuplot -persistent", "w");
     if (gnuplotPipe == NULL) {
         printf("Failed to open Gnuplot pipe.\n");
+        free(intensities);
+        for (int row = 0; row < imageHeight; row++) {
+            free(image[row]);
+        }
+        free(image);
         return 1;
     }
 
@@ -87,13 +131,21 @@ int main() {
     fprintf(gnuplotPipe, "plot '-' with lines title 'Intensity'\n");  // Begin plotting with lines and a title
 
     // Plot the intensity values
-    for (int col = 0; col < IMAGE_WIDTH; col++) {
+    for (int col = 0; col < imageWidth; col++) {
         double wavelength = minWavelength + col * wavelengthStep;
-        fprintf(gnuplotPipe, "%f %d\n", wavelength, intensities[col]);  // Print wavelength and intensity values
+        fprintf(gnuplotPipe, "%f %d\n", wavelength, intensities[col]);
     }
     fprintf(gnuplotPipe, "e\n");  // End of data marker for Gnuplot
 
     fflush(gnuplotPipe);  // Flush the pipe to ensure all data is written
     pclose(gnuplotPipe);  // Close the Gnuplot pipe
 
+    // Free allocated memory
+    free(intensities);
+    for (int row = 0; row < imageHeight; row++) {
+        free(image[row]);
+    }
+    free(image);
+
     return 0;
+}
