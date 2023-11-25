@@ -12,7 +12,7 @@ Sure, I'll provide you with a guide to use the script and then add it as version
    If you haven't already, clone the GitHub repository to your local machine. Open a terminal and run:
 
    ```bash
-   git clone <repository_url>
+   git clone https://github.com/fahadarefin/Low_Cost_Spectrophotometer_Image_Processing
    cd <repository_directory>
    ```
 
